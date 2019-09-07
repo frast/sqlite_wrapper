@@ -595,9 +595,7 @@ class Database final {
   };
 
   // A TransactionGuard object starts a SQLite transaction when constructed,
-  // and when destructed either commits or rolls back the transaction,
-  // depending on whether the object is being destroyed as a result of stack
-  // unwinding caused by an uncaught exception.
+  // and when destructed it rolls back the transaction, if it is was not committed
   class TransactionGuard final {
    public:
     TransactionGuard() {
