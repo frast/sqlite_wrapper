@@ -263,7 +263,7 @@ inline void createFunction(T fn) {
 }
 
 template <const auto &db_name>
-class Database {
+class Database final {
  public:
   // This hook is called every time a connection is made, taking as argument
   // the database handle corresponding to the new connection.
@@ -271,7 +271,7 @@ class Database {
 
  private:
   struct Connection {
-    sqlite3 *db_handle;
+    sqlite3 *db_handle = nullptr;
 
     Connection(const Connection &) = delete;
     Connection &operator=(const Connection &) = delete;
@@ -315,13 +315,25 @@ class Database {
       }
     }
 
-    ~Connection(void) {
-      // To close the database, we use sqlite3_close_v2() because unlike
-      // sqlite3_close(), this function allows there to be un-finalized
-      // prepared statements.  The database handle will close once
-      // all prepared statements have been finalized by the thread-local
-      // `PreparedStmtCache` destructors.
-      sqlite3_close_v2(db_handle);
+	//  explicitly destroy a Connection or get an exception if it fails
+	static void Destroy(Connection&& c)
+	{
+		int err = sqlite3_close_v2(c.db_handle);
+		c.db_handle = nullptr;
+		if (err != SQLITE_OK)
+			throw error{ err };
+	}
+
+    ~Connection(void) noexcept {
+		// To close the database, we use sqlite3_close_v2() because unlike
+		// sqlite3_close(), this function allows there to be un-finalized
+		// prepared statements.  The database handle will close once
+		// all prepared statements have been finalized by the thread-local
+		// `PreparedStmtCache` destructors.
+		if (db_handle)
+		{
+			sqlite3_close_v2(db_handle);
+		}
     }
   };
 
@@ -349,7 +361,7 @@ class Database {
       : db_handle(connection_tls().db_handle),
         first_free_stmt(nullptr), other_free_stmts() { }
 
-    ~PreparedStmtCache(void) {
+    ~PreparedStmtCache(void) noexcept {
       sqlite3_finalize(first_free_stmt);
       for (auto stmt : other_free_stmts) {
         sqlite3_finalize(stmt);
@@ -484,7 +496,7 @@ class Database {
       return *this;
     }
 
-    ~QueryResult() {
+    ~QueryResult() noexcept {
       if (stmt == nullptr) {
         return;
       }
@@ -510,9 +522,12 @@ class Database {
       if (!first_invocation) {
         ret = sqlite3_step(stmt);
       }
-      if (ret != SQLITE_ROW) {
+      if (ret == SQLITE_DONE) {
         return false;
       }
+	  else if (ret != SQLITE_ROW) {
+		  throw error{ ret };
+	  }
       int idx = 0;
       auto column_dispatcher = [this, &idx] (auto &&arg, auto &self) {
 
@@ -583,21 +598,19 @@ class Database {
   // and when destructed either commits or rolls back the transaction,
   // depending on whether the object is being destroyed as a result of stack
   // unwinding caused by an uncaught exception.
-  class TransactionGuard {
+  class TransactionGuard final {
    public:
     TransactionGuard() {
       beginTransaction();
       transaction_active = true;
     }
 
-    ~TransactionGuard() {
-      if (!transaction_active)
-        return;
-      if (std::uncaught_exceptions() == uncaught_exception_count) {
-        commit();
-      } else {
-        rollback();
-      }
+    ~TransactionGuard() noexcept {
+		try {
+			if (transaction_active)
+				rollback();
+		}
+		catch (...) {} // assert here?
     }
 
     void rollback() {
@@ -620,7 +633,6 @@ class Database {
     TransactionGuard &operator=(const TransactionGuard &) = delete;
 
    private:
-    const int uncaught_exception_count = std::uncaught_exceptions();
     bool transaction_active;
   };
 
